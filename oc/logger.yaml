@@ -1,0 +1,151 @@
+apiVersion: v1
+kind: Template
+objects:
+
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: openjdk
+  spec:
+    tags:
+    - from:
+        kind: DockerImage
+        name: library/openjdk:8-slim
+      name: 8-slim
+
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    labels:
+      app: logger
+    name: logger
+  spec:
+    tags: []
+
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    name: logger
+    labels:
+      app: logger
+  spec:
+    triggers: []
+    source:
+      type: Binary
+    strategy:
+      type: Dockerfile
+      dockerStrategy:
+        from:
+          kind: ImageStreamTag
+          name: openjdk:8-slim
+    output:
+      to:
+        kind: ImageStreamTag
+        name: logger:latest
+
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: filebeat-oss
+  spec:
+    tags:
+    - from:
+        kind: DockerImage
+        name: docker.elastic.co/beats/filebeat-oss:6.3.2
+      name: 6.3.2
+
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    labels:
+      app: filebeat
+    name: filebeat
+  spec:
+    tags: []
+
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    name: filebeat
+    labels:
+      app: filebeat
+  spec:
+    triggers: []
+    source:
+      dockerfile: |-
+        FROM filebeat:6.3.2
+
+        USER root
+        RUN chmod -R 755 /usr/share/filebeat && \
+        chmod -R 777 /usr/share/filebeat
+
+        CMD ["/usr/share/filebeat/filebeat", "-strict.perms=false"]
+      type: Dockerfile
+    strategy:
+      type: Dockerfile
+      dockerStrategy:
+        from:
+          kind: ImageStreamTag
+          name: filebeat-oss:6.3.2
+    output:
+      to:
+        kind: ImageStreamTag
+        name: filebeat:latest
+
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: filebeat-config
+  data:
+    filebeat.yml: |
+      filebeat.inputs:
+      - input_type: log
+        paths:  
+          - /logs/*.log
+      output.elasticsearch:
+        hosts: ["http://efk-elastic:9200"]
+        index: "filebeat-%{+yyyy.MM.dd}"
+      setup.template:
+        name: "logger"
+        pattern: "logger-*"
+
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    labels:
+      app: logger
+    name: logger
+  spec:
+    replicas: 1
+    strategy:
+      type: Rolling
+    selector:
+      name: logger
+    template:
+      metadata:
+        labels:
+          name: logger
+      spec:
+        volumes:
+        - name: logs-volume
+          emptyDir: {}
+        - name: filebeat-config-volume
+          configMap:
+            name: filebeat-config
+        containers:
+        - name: logger
+          image: 172.30.1.1:5000/myproject/logger:latest
+          volumeMounts:
+          - name: logs-volume
+            mountPath: /app/logs
+            readOnly: false
+        - name: filebeat
+          image: 172.30.1.1:5000/myproject/filebeat:latest
+          volumeMounts:
+          - name: logs-volume
+            mountPath: /logs
+            readOnly: true
+          - name: filebeat-config-volume
+            mountPath: /usr/share/filebeat/filebeat.yml
+            readOnly: true
+            subPath: filebeat.yml
